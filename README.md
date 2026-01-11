@@ -8,7 +8,9 @@ Difyワークフローなどの外部サービスから呼び出すことがで�
 - Cloudinary等の外部URLから動画をダウンロード
 - YouTube APIを使用して動画をアップロード
 - タイトル、説明、タグ、カテゴリ、プライバシー設定のカスタマイズ
-- Difyワークフローからの呼び出し対応
+- Difyワークフローからの呼び出し対応（ポーリングまたはWebhook）
+- アップロード結果を固定GistにJSON形式で保存
+- 24時間以上前の古い結果を自動削除
 - 手動トリガー（テスト用）
 
 ## セットアップ
@@ -73,15 +75,30 @@ python get_refresh_token.py
 ブラウザが開くので、YouTubeアカウントでログインして権限を許可してください。
 表示された`Refresh Token`をメモします。
 
-### 2. GitHub Secretsの設定
+### 2. 結果保存用Gistの作成
+
+アップロード結果を保存するための固定Gistを作成します。
+
+```bash
+# スクリプトを実行
+bash create_results_gist.sh
+```
+
+スクリプトがGitHub PATを聞いてきます。以下のスコープを持つPATを入力：
+- `gist`（Gistの作成と編集用）
+
+成功すると、`RESULTS_GIST_ID`が表示されます。これをメモしてください。
+
+### 3. GitHub Secretsの設定
 
 リポジトリの「Settings」→「Secrets and variables」→「Actions」→「New repository secret」で以下を追加：
 
 - `YOUTUBE_CLIENT_ID`: Google OAuth クライアントID
 - `YOUTUBE_CLIENT_SECRET`: Google OAuth クライアントシークレット
 - `YOUTUBE_REFRESH_TOKEN`: 取得したリフレッシュトークン
+- `RESULTS_GIST_ID`: ステップ2で取得したGist ID
 
-### 3. Personal Access Token（PAT）の作成（Difyから呼び出す場合）
+### 4. Personal Access Token（PAT）の作成（Difyから呼び出す場合）
 
 repository_dispatchイベントをトリガーするため、PATが必要です：
 
@@ -164,7 +181,7 @@ HTTPリクエストノードで結果を取得（ループ内で実行）：
 
 **エンドポイント:**
 ```
-GET https://api.github.com/gists
+GET https://api.github.com/gists/{RESULTS_GIST_ID}
 ```
 
 **ヘッダー:**
@@ -173,9 +190,19 @@ Authorization: Bearer {YOUR_GITHUB_PAT}
 Accept: application/vnd.github.v3+json
 ```
 
-レスポンスから該当するGistを探す：
-- `description`が`YouTube Upload Result - {{unique_id}}`のものを探す
-- ファイル`youtube-upload-{{unique_id}}.json`の`content`を取得
+注: `{RESULTS_GIST_ID}`は、セットアップ時に作成したGist IDです。
+
+レスポンスから該当するファイルを取得：
+```python
+# レスポンスのパース例
+files = response_json['files']
+filename = f'youtube-upload-{unique_id}.json'
+
+if filename in files:
+    content = files[filename]['content']
+    result = json.loads(content)
+    # result['video_url']を取得
+```
 
 #### ステップ5: 結果を解析
 
@@ -193,17 +220,17 @@ if result['success']:
 ```
 [1. コード: UUID生成]
   ↓
-[2. HTTPリクエスト: GitHub Actions呼び出し]
+[2. HTTPリクエスト: GitHub Actions呼び出し (unique_id付き)]
   ↓
 [3. コード: 5秒待機]
   ↓
 [4. ループ開始（最大10回）]
   ↓
-[5. HTTPリクエスト: Gist一覧取得]
+[5. HTTPリクエスト: GET /gists/{RESULTS_GIST_ID}]
   ↓
-[6. コード: 該当Gist検索＆結果解析]
+[6. コード: ファイル youtube-upload-{unique_id}.json を検索＆結果解析]
   ↓
-[7. 条件分岐: 結果が見つかった？]
+[7. 条件分岐: ファイルが見つかった？]
   ├─ Yes → ループ終了、video_url使用
   └─ No → 5秒待機して[5]に戻る
 ```
@@ -330,7 +357,7 @@ curl -X POST \
 
 echo "Unique ID: $UNIQUE_ID"
 echo "Wait for the upload to complete, then get the result from:"
-echo "curl -H 'Authorization: Bearer YOUR_GITHUB_PAT' https://api.github.com/gists | jq '.[] | select(.description | contains(\"$UNIQUE_ID\"))'"
+echo "curl -H 'Authorization: Bearer YOUR_GITHUB_PAT' https://api.github.com/gists/YOUR_RESULTS_GIST_ID | jq '.files[\"youtube-upload-$UNIQUE_ID.json\"].content | fromjson'"
 ```
 
 **Webhook方式:**

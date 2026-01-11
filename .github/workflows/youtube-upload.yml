@@ -142,9 +142,11 @@ jobs:
         if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESULTS_GIST_ID: ${{ secrets.RESULTS_GIST_ID }}
         run: |
           UNIQUE_ID="${{ steps.params.outputs.unique_id }}"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          TIMESTAMP_UNIX=$(date +%s)
 
           if [ "${{ steps.upload.outputs.success }}" = "true" ]; then
             RESULT_JSON=$(cat <<EOF
@@ -174,31 +176,55 @@ jobs:
           )
           fi
 
-          # Create Gist with result
-          GIST_RESPONSE=$(curl -s -X POST https://api.github.com/gists \
+          # Get existing Gist to check for old files
+          GIST_DATA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/gists/$RESULTS_GIST_ID)
+
+          # Build update payload with new file
+          UPDATE_PAYLOAD=$(jq -n \
+            --arg content "$RESULT_JSON" \
+            --arg filename "youtube-upload-$UNIQUE_ID.json" \
+            '{
+              files: {
+                ($filename): {
+                  content: $content
+                }
+              }
+            }')
+
+          # Check for old files (>24 hours) and mark them for deletion
+          CUTOFF_TIME=$((TIMESTAMP_UNIX - 86400))
+          OLD_FILES=$(echo "$GIST_DATA" | jq -r '.files | keys[]' | grep "^youtube-upload-" || true)
+
+          for file in $OLD_FILES; do
+            # Extract timestamp from existing file if it has one
+            FILE_CONTENT=$(echo "$GIST_DATA" | jq -r ".files[\"$file\"].content")
+            FILE_TIMESTAMP=$(echo "$FILE_CONTENT" | jq -r '.timestamp // empty' 2>/dev/null || echo "")
+
+            if [ -n "$FILE_TIMESTAMP" ]; then
+              FILE_TIMESTAMP_UNIX=$(date -d "$FILE_TIMESTAMP" +%s 2>/dev/null || echo "0")
+              if [ "$FILE_TIMESTAMP_UNIX" -lt "$CUTOFF_TIME" ]; then
+                echo "Marking old file for deletion: $file"
+                UPDATE_PAYLOAD=$(echo "$UPDATE_PAYLOAD" | jq --arg file "$file" '.files[$file] = null')
+              fi
+            fi
+          done
+
+          # Update Gist with new file and remove old ones
+          GIST_RESPONSE=$(curl -s -X PATCH https://api.github.com/gists/$RESULTS_GIST_ID \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
-            -d @- <<EOF
-          {
-            "description": "YouTube Upload Result - $UNIQUE_ID",
-            "public": false,
-            "files": {
-              "youtube-upload-$UNIQUE_ID.json": {
-                "content": $(echo "$RESULT_JSON" | jq -Rs .)
-              }
-            }
-          }
-          EOF
-          )
+            -d "$UPDATE_PAYLOAD")
 
-          GIST_ID=$(echo "$GIST_RESPONSE" | jq -r '.id')
           GIST_URL=$(echo "$GIST_RESPONSE" | jq -r '.html_url')
 
           echo "✓ Result saved to Gist"
-          echo "  Gist ID: $GIST_ID"
+          echo "  Gist ID: $RESULTS_GIST_ID"
           echo "  Gist URL: $GIST_URL"
           echo "  Unique ID: $UNIQUE_ID"
-          echo "gist_id=$GIST_ID" >> $GITHUB_OUTPUT
+          echo "  File: youtube-upload-$UNIQUE_ID.json"
+          echo "gist_id=$RESULTS_GIST_ID" >> $GITHUB_OUTPUT
           echo "gist_url=$GIST_URL" >> $GITHUB_OUTPUT
 
       - name: Send callback to Dify
