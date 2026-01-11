@@ -141,7 +141,7 @@ jobs:
         id: save_result
         if: always()
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_PAT }}
+          GIST_TOKEN: ${{ secrets.GITHUB_PAT }}
           RESULTS_GIST_ID: ${{ secrets.RESULTS_GIST_ID }}
         run: |
           UNIQUE_ID="${{ steps.params.outputs.unique_id }}"
@@ -177,7 +177,7 @@ jobs:
           fi
 
           # Get existing Gist to check for old files
-          GIST_DATA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          GIST_DATA=$(curl -s -H "Authorization: token $GIST_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             https://api.github.com/gists/$RESULTS_GIST_ID)
 
@@ -213,7 +213,7 @@ jobs:
 
           # Update Gist with new file and remove old ones
           GIST_RESPONSE=$(curl -s -X PATCH https://api.github.com/gists/$RESULTS_GIST_ID \
-            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Authorization: token $GIST_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             -d "$UPDATE_PAYLOAD")
 
