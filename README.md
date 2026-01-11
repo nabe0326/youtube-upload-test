@@ -132,7 +132,8 @@ Content-Type: application/json
     "description": "動画の説明",
     "tags": "tag1,tag2,tag3",
     "category_id": "22",
-    "privacy": "private"
+    "privacy": "private",
+    "callback_url": "https://your-dify-webhook-url.com/callback"
   }
 }
 ```
@@ -147,6 +148,7 @@ Content-Type: application/json
 | tags | | "" | タグ（カンマ区切り） |
 | category_id | | "22" | YouTubeカテゴリID |
 | privacy | | "private" | プライバシー設定（private/public/unlisted） |
+| callback_url | | - | アップロード完了後の結果を受け取るWebhook URL |
 
 **YouTubeカテゴリID一覧:**
 
@@ -165,6 +167,36 @@ Content-Type: application/json
 - 27: Education
 - 28: Science & Technology
 
+**コールバックレスポンス形式:**
+
+アップロード完了後、指定した`callback_url`に以下の形式でPOSTリクエストが送信されます。
+
+成功時：
+```json
+{
+  "success": true,
+  "video_id": "dQw4w9WgXcQ",
+  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "title": "動画タイトル",
+  "message": "Video uploaded successfully"
+}
+```
+
+失敗時：
+```json
+{
+  "success": false,
+  "error": "エラーメッセージ",
+  "title": "動画タイトル",
+  "message": "Video upload failed"
+}
+```
+
+Difyワークフローでこのレスポンスを受け取るには：
+1. Webhookノードを作成してURLを取得
+2. そのURLを`callback_url`として渡す
+3. Webhookノードで`video_url`などの値を取得して次のノードで利用
+
 ### curl でのテスト
 
 ```bash
@@ -180,10 +212,13 @@ curl -X POST \
       "title": "テスト動画",
       "description": "これはテスト動画です",
       "tags": "test,github-actions",
-      "privacy": "private"
+      "privacy": "private",
+      "callback_url": "https://webhook.site/your-unique-id"
     }
   }'
 ```
+
+注: `callback_url`は[webhook.site](https://webhook.site/)などのテストサービスで動作確認できます。
 
 ## ローカルでの実行
 

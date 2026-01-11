@@ -40,6 +40,11 @@ on:
           - public
           - unlisted
         default: 'private'
+      callback_url:
+        description: 'Callback URL (optional)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   upload:
@@ -69,6 +74,7 @@ jobs:
             echo "tags=${{ github.event.client_payload.tags }}" >> $GITHUB_OUTPUT
             echo "category_id=${{ github.event.client_payload.category_id || '22' }}" >> $GITHUB_OUTPUT
             echo "privacy=${{ github.event.client_payload.privacy || 'private' }}" >> $GITHUB_OUTPUT
+            echo "callback_url=${{ github.event.client_payload.callback_url }}" >> $GITHUB_OUTPUT
           else
             echo "video_url=${{ inputs.video_url }}" >> $GITHUB_OUTPUT
             echo "title=${{ inputs.title }}" >> $GITHUB_OUTPUT
@@ -76,24 +82,97 @@ jobs:
             echo "tags=${{ inputs.tags }}" >> $GITHUB_OUTPUT
             echo "category_id=${{ inputs.category_id }}" >> $GITHUB_OUTPUT
             echo "privacy=${{ inputs.privacy }}" >> $GITHUB_OUTPUT
+            echo "callback_url=${{ inputs.callback_url }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload video to YouTube
+        id: upload
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         run: |
+          set +e  # Don't exit on error, we want to capture the result
+
           python src/upload_youtube.py \
             --video-url "${{ steps.params.outputs.video_url }}" \
             --title "${{ steps.params.outputs.title }}" \
             --description "${{ steps.params.outputs.description }}" \
             --tags "${{ steps.params.outputs.tags }}" \
             --category-id "${{ steps.params.outputs.category_id }}" \
-            --privacy "${{ steps.params.outputs.privacy }}"
+            --privacy "${{ steps.params.outputs.privacy }}" \
+            > upload_result.json 2> upload_error.log
 
-      - name: Upload result
+          UPLOAD_EXIT_CODE=$?
+          echo "exit_code=$UPLOAD_EXIT_CODE" >> $GITHUB_OUTPUT
+
+          if [ $UPLOAD_EXIT_CODE -eq 0 ]; then
+            echo "success=true" >> $GITHUB_OUTPUT
+            # Extract video_id and video_url from JSON result
+            VIDEO_ID=$(cat upload_result.json | grep -o '"video_id": "[^"]*"' | cut -d'"' -f4)
+            VIDEO_URL=$(cat upload_result.json | grep -o '"video_url": "[^"]*"' | cut -d'"' -f4)
+            echo "video_id=$VIDEO_ID" >> $GITHUB_OUTPUT
+            echo "video_url=$VIDEO_URL" >> $GITHUB_OUTPUT
+          else
+            echo "success=false" >> $GITHUB_OUTPUT
+            # Capture error message
+            ERROR_MSG=$(cat upload_error.log | tail -n 10)
+            echo "error<<EOF" >> $GITHUB_OUTPUT
+            echo "$ERROR_MSG" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+          exit $UPLOAD_EXIT_CODE
+
+      - name: Send callback to Dify
+        if: always() && steps.params.outputs.callback_url != ''
+        run: |
+          CALLBACK_URL="${{ steps.params.outputs.callback_url }}"
+
+          if [ "${{ steps.upload.outputs.success }}" = "true" ]; then
+            # Success case
+            curl -X POST "$CALLBACK_URL" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "success": true,
+                "video_id": "${{ steps.upload.outputs.video_id }}",
+                "video_url": "${{ steps.upload.outputs.video_url }}",
+                "title": "${{ steps.params.outputs.title }}",
+                "message": "Video uploaded successfully"
+              }'
+          else
+            # Error case
+            curl -X POST "$CALLBACK_URL" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "success": false,
+                "error": "${{ steps.upload.outputs.error }}",
+                "title": "${{ steps.params.outputs.title }}",
+                "message": "Video upload failed"
+              }'
+          fi
+
+          echo "Callback sent to: $CALLBACK_URL"
+
+      - name: Upload result summary
         if: always()
         run: |
-          echo "Workflow completed"
-          echo "Event: ${{ github.event_name }}"
+          echo "## Upload Result" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.upload.outputs.success }}" = "true" ]; then
+            echo "✅ **Success**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Video ID**: ${{ steps.upload.outputs.video_id }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Video URL**: ${{ steps.upload.outputs.video_url }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Title**: ${{ steps.params.outputs.title }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Failed**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Title**: ${{ steps.params.outputs.title }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Error**: See logs for details" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ steps.params.outputs.callback_url }}" != "" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "📡 Callback sent to Dify" >> $GITHUB_STEP_SUMMARY
+          fi
