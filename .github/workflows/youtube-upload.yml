@@ -45,6 +45,11 @@ on:
         required: false
         type: string
         default: ''
+      unique_id:
+        description: 'Unique ID for tracking (optional)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   upload:
@@ -75,6 +80,7 @@ jobs:
             echo "category_id=${{ github.event.client_payload.category_id || '22' }}" >> $GITHUB_OUTPUT
             echo "privacy=${{ github.event.client_payload.privacy || 'private' }}" >> $GITHUB_OUTPUT
             echo "callback_url=${{ github.event.client_payload.callback_url }}" >> $GITHUB_OUTPUT
+            UNIQUE_ID="${{ github.event.client_payload.unique_id }}"
           else
             echo "video_url=${{ inputs.video_url }}" >> $GITHUB_OUTPUT
             echo "title=${{ inputs.title }}" >> $GITHUB_OUTPUT
@@ -83,7 +89,14 @@ jobs:
             echo "category_id=${{ inputs.category_id }}" >> $GITHUB_OUTPUT
             echo "privacy=${{ inputs.privacy }}" >> $GITHUB_OUTPUT
             echo "callback_url=${{ inputs.callback_url }}" >> $GITHUB_OUTPUT
+            UNIQUE_ID="${{ inputs.unique_id }}"
           fi
+
+          # Use github.run_id if unique_id is not provided
+          if [ -z "$UNIQUE_ID" ]; then
+            UNIQUE_ID="${{ github.run_id }}"
+          fi
+          echo "unique_id=$UNIQUE_ID" >> $GITHUB_OUTPUT
 
       - name: Upload video to YouTube
         id: upload
@@ -124,6 +137,70 @@ jobs:
 
           exit $UPLOAD_EXIT_CODE
 
+      - name: Save result to Gist
+        id: save_result
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UNIQUE_ID="${{ steps.params.outputs.unique_id }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          if [ "${{ steps.upload.outputs.success }}" = "true" ]; then
+            RESULT_JSON=$(cat <<EOF
+          {
+            "success": true,
+            "video_id": "${{ steps.upload.outputs.video_id }}",
+            "video_url": "${{ steps.upload.outputs.video_url }}",
+            "title": "${{ steps.params.outputs.title }}",
+            "unique_id": "$UNIQUE_ID",
+            "timestamp": "$TIMESTAMP",
+            "message": "Video uploaded successfully"
+          }
+          EOF
+          )
+          else
+            ERROR_MSG=$(echo '${{ steps.upload.outputs.error }}' | jq -Rs .)
+            RESULT_JSON=$(cat <<EOF
+          {
+            "success": false,
+            "error": $ERROR_MSG,
+            "title": "${{ steps.params.outputs.title }}",
+            "unique_id": "$UNIQUE_ID",
+            "timestamp": "$TIMESTAMP",
+            "message": "Video upload failed"
+          }
+          EOF
+          )
+          fi
+
+          # Create Gist with result
+          GIST_RESPONSE=$(curl -s -X POST https://api.github.com/gists \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d @- <<EOF
+          {
+            "description": "YouTube Upload Result - $UNIQUE_ID",
+            "public": false,
+            "files": {
+              "youtube-upload-$UNIQUE_ID.json": {
+                "content": $(echo "$RESULT_JSON" | jq -Rs .)
+              }
+            }
+          }
+          EOF
+          )
+
+          GIST_ID=$(echo "$GIST_RESPONSE" | jq -r '.id')
+          GIST_URL=$(echo "$GIST_RESPONSE" | jq -r '.html_url')
+
+          echo "✓ Result saved to Gist"
+          echo "  Gist ID: $GIST_ID"
+          echo "  Gist URL: $GIST_URL"
+          echo "  Unique ID: $UNIQUE_ID"
+          echo "gist_id=$GIST_ID" >> $GITHUB_OUTPUT
+          echo "gist_url=$GIST_URL" >> $GITHUB_OUTPUT
+
       - name: Send callback to Dify
         if: always() && steps.params.outputs.callback_url != ''
         run: |
@@ -138,6 +215,7 @@ jobs:
                 "video_id": "${{ steps.upload.outputs.video_id }}",
                 "video_url": "${{ steps.upload.outputs.video_url }}",
                 "title": "${{ steps.params.outputs.title }}",
+                "unique_id": "${{ steps.params.outputs.unique_id }}",
                 "message": "Video uploaded successfully"
               }'
           else
@@ -148,6 +226,7 @@ jobs:
                 "success": false,
                 "error": "${{ steps.upload.outputs.error }}",
                 "title": "${{ steps.params.outputs.title }}",
+                "unique_id": "${{ steps.params.outputs.unique_id }}",
                 "message": "Video upload failed"
               }'
           fi
@@ -171,6 +250,13 @@ jobs:
             echo "- **Title**: ${{ steps.params.outputs.title }}" >> $GITHUB_STEP_SUMMARY
             echo "- **Error**: See logs for details" >> $GITHUB_STEP_SUMMARY
           fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tracking Info:**" >> $GITHUB_STEP_SUMMARY
+          echo "- **Unique ID**: ${{ steps.params.outputs.unique_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Gist URL**: ${{ steps.save_result.outputs.gist_url }}" >> $GITHUB_STEP_SUMMARY
 
           if [ "${{ steps.params.outputs.callback_url }}" != "" ]; then
             echo "" >> $GITHUB_STEP_SUMMARY

@@ -106,9 +106,21 @@ repository_dispatchイベントをトリガーするため、PATが必要です�
    - **category_id**: カテゴリID（デフォルト: 22）
    - **privacy**: プライバシー設定（private/public/unlisted）
 
-### Difyから呼び出す
+### Difyから呼び出す（ポーリング方式 - 推奨）
 
-DifyワークフローでHTTPリクエストノードを使用：
+一つのワークフロー内でYouTube URLを取得する方法です。
+
+#### ステップ1: ユニークIDを生成
+
+コードノードでUUIDを生成：
+```python
+import uuid
+unique_id = str(uuid.uuid4())
+```
+
+#### ステップ2: GitHub Actionsを呼び出す
+
+HTTPリクエストノードを使用：
 
 **エンドポイント:**
 ```
@@ -121,6 +133,125 @@ Authorization: Bearer {YOUR_GITHUB_PAT}
 Accept: application/vnd.github.v3+json
 Content-Type: application/json
 ```
+
+**ボディ:**
+```json
+{
+  "event_type": "upload-video",
+  "client_payload": {
+    "video_url": "https://res.cloudinary.com/xxx/video/upload/xxx.mp4",
+    "title": "動画タイトル",
+    "description": "動画の説明",
+    "tags": "tag1,tag2,tag3",
+    "category_id": "22",
+    "privacy": "private",
+    "unique_id": "{{unique_id}}"
+  }
+}
+```
+
+#### ステップ3: 少し待機
+
+コードノードで5秒待機：
+```python
+import time
+time.sleep(5)
+```
+
+#### ステップ4: ポーリングで結果を取得
+
+HTTPリクエストノードで結果を取得（ループ内で実行）：
+
+**エンドポイント:**
+```
+GET https://api.github.com/gists
+```
+
+**ヘッダー:**
+```
+Authorization: Bearer {YOUR_GITHUB_PAT}
+Accept: application/vnd.github.v3+json
+```
+
+レスポンスから該当するGistを探す：
+- `description`が`YouTube Upload Result - {{unique_id}}`のものを探す
+- ファイル`youtube-upload-{{unique_id}}.json`の`content`を取得
+
+#### ステップ5: 結果を解析
+
+コードノードでJSONをパース：
+```python
+import json
+result = json.loads(gist_content)
+if result['success']:
+    video_url = result['video_url']
+    # 次の処理へ
+```
+
+#### Difyワークフロー構成例
+
+```
+[1. コード: UUID生成]
+  ↓
+[2. HTTPリクエスト: GitHub Actions呼び出し]
+  ↓
+[3. コード: 5秒待機]
+  ↓
+[4. ループ開始（最大10回）]
+  ↓
+[5. HTTPリクエスト: Gist一覧取得]
+  ↓
+[6. コード: 該当Gist検索＆結果解析]
+  ↓
+[7. 条件分岐: 結果が見つかった？]
+  ├─ Yes → ループ終了、video_url使用
+  └─ No → 5秒待機して[5]に戻る
+```
+
+**パラメータ説明:**
+
+| パラメータ | 必須 | デフォルト | 説明 |
+|----------|------|-----------|------|
+| video_url | ✓ | - | 動画のURL（Cloudinary等） |
+| title | ✓ | - | 動画タイトル |
+| description | | "" | 動画の説明文 |
+| tags | | "" | タグ（カンマ区切り） |
+| category_id | | "22" | YouTubeカテゴリID |
+| privacy | | "private" | プライバシー設定（private/public/unlisted） |
+| unique_id | ✓ | - | 結果を追跡するためのユニークID（UUIDを推奨） |
+
+**結果フォーマット（Gist内のJSON）:**
+
+成功時：
+```json
+{
+  "success": true,
+  "video_id": "dQw4w9WgXcQ",
+  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "title": "動画タイトル",
+  "unique_id": "your-unique-id",
+  "timestamp": "2026-01-11T10:30:00Z",
+  "message": "Video uploaded successfully"
+}
+```
+
+失敗時：
+```json
+{
+  "success": false,
+  "error": "エラーメッセージ",
+  "title": "動画タイトル",
+  "unique_id": "your-unique-id",
+  "timestamp": "2026-01-11T10:30:00Z",
+  "message": "Video upload failed"
+}
+```
+
+---
+
+### Difyから呼び出す（Webhook方式）
+
+2つのワークフローに分けて実装する方法です。
 
 **ボディ:**
 ```json
@@ -150,7 +281,14 @@ Content-Type: application/json
 | privacy | | "private" | プライバシー設定（private/public/unlisted） |
 | callback_url | | - | アップロード完了後の結果を受け取るWebhook URL |
 
-**YouTubeカテゴリID一覧:**
+Webhookノードで結果を受け取る方法：
+1. Webhookノードを作成してURLを取得
+2. そのURLを`callback_url`として渡す
+3. Webhookノードで`video_url`などの値を取得して次のノードで利用
+
+---
+
+### YouTubeカテゴリID一覧
 
 - 1: Film & Animation
 - 2: Autos & Vehicles
@@ -167,38 +305,35 @@ Content-Type: application/json
 - 27: Education
 - 28: Science & Technology
 
-**コールバックレスポンス形式:**
-
-アップロード完了後、指定した`callback_url`に以下の形式でPOSTリクエストが送信されます。
-
-成功時：
-```json
-{
-  "success": true,
-  "video_id": "dQw4w9WgXcQ",
-  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-  "title": "動画タイトル",
-  "message": "Video uploaded successfully"
-}
-```
-
-失敗時：
-```json
-{
-  "success": false,
-  "error": "エラーメッセージ",
-  "title": "動画タイトル",
-  "message": "Video upload failed"
-}
-```
-
-Difyワークフローでこのレスポンスを受け取るには：
-1. Webhookノードを作成してURLを取得
-2. そのURLを`callback_url`として渡す
-3. Webhookノードで`video_url`などの値を取得して次のノードで利用
-
 ### curl でのテスト
 
+**ポーリング方式:**
+```bash
+UNIQUE_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+
+curl -X POST \
+  -H "Authorization: Bearer YOUR_GITHUB_PAT" \
+  -H "Accept: application/vnd.github.v3+json" \
+  -H "Content-Type: application/json" \
+  https://api.github.com/repos/YOUR_USERNAME/youtube-upload-test/dispatches \
+  -d "{
+    \"event_type\": \"upload-video\",
+    \"client_payload\": {
+      \"video_url\": \"https://res.cloudinary.com/xxx/video/upload/xxx.mp4\",
+      \"title\": \"テスト動画\",
+      \"description\": \"これはテスト動画です\",
+      \"tags\": \"test,github-actions\",
+      \"privacy\": \"private\",
+      \"unique_id\": \"$UNIQUE_ID\"
+    }
+  }"
+
+echo "Unique ID: $UNIQUE_ID"
+echo "Wait for the upload to complete, then get the result from:"
+echo "curl -H 'Authorization: Bearer YOUR_GITHUB_PAT' https://api.github.com/gists | jq '.[] | select(.description | contains(\"$UNIQUE_ID\"))'"
+```
+
+**Webhook方式:**
 ```bash
 curl -X POST \
   -H "Authorization: Bearer YOUR_GITHUB_PAT" \
