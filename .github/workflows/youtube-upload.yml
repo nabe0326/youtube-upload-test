@@ -141,7 +141,7 @@ jobs:
         id: save_result
         if: always()
         env:
-          GIST_TOKEN: ${{ secrets.GITHUB_PAT }}
+          GIST_TOKEN: ${{ secrets.GIST_PAT }}
           RESULTS_GIST_ID: ${{ secrets.RESULTS_GIST_ID }}
         run: |
           UNIQUE_ID="${{ steps.params.outputs.unique_id }}"
