@@ -1,0 +1,99 @@
+name: YouTube Video Upload
+
+on:
+  # Triggered by Dify or external services
+  repository_dispatch:
+    types: [upload-video]
+
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'Video URL (Cloudinary)'
+        required: true
+        type: string
+      title:
+        description: 'Video title'
+        required: true
+        type: string
+      description:
+        description: 'Video description'
+        required: false
+        type: string
+        default: ''
+      tags:
+        description: 'Tags (comma-separated)'
+        required: false
+        type: string
+        default: ''
+      category_id:
+        description: 'Category ID (default: 22)'
+        required: false
+        type: string
+        default: '22'
+      privacy:
+        description: 'Privacy status'
+        required: false
+        type: choice
+        options:
+          - private
+          - public
+          - unlisted
+        default: 'private'
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Parse input parameters
+        id: params
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "video_url=${{ github.event.client_payload.video_url }}" >> $GITHUB_OUTPUT
+            echo "title=${{ github.event.client_payload.title }}" >> $GITHUB_OUTPUT
+            echo "description=${{ github.event.client_payload.description }}" >> $GITHUB_OUTPUT
+            echo "tags=${{ github.event.client_payload.tags }}" >> $GITHUB_OUTPUT
+            echo "category_id=${{ github.event.client_payload.category_id || '22' }}" >> $GITHUB_OUTPUT
+            echo "privacy=${{ github.event.client_payload.privacy || 'private' }}" >> $GITHUB_OUTPUT
+          else
+            echo "video_url=${{ inputs.video_url }}" >> $GITHUB_OUTPUT
+            echo "title=${{ inputs.title }}" >> $GITHUB_OUTPUT
+            echo "description=${{ inputs.description }}" >> $GITHUB_OUTPUT
+            echo "tags=${{ inputs.tags }}" >> $GITHUB_OUTPUT
+            echo "category_id=${{ inputs.category_id }}" >> $GITHUB_OUTPUT
+            echo "privacy=${{ inputs.privacy }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload video to YouTube
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          python src/upload_youtube.py \
+            --video-url "${{ steps.params.outputs.video_url }}" \
+            --title "${{ steps.params.outputs.title }}" \
+            --description "${{ steps.params.outputs.description }}" \
+            --tags "${{ steps.params.outputs.tags }}" \
+            --category-id "${{ steps.params.outputs.category_id }}" \
+            --privacy "${{ steps.params.outputs.privacy }}"
+
+      - name: Upload result
+        if: always()
+        run: |
+          echo "Workflow completed"
+          echo "Event: ${{ github.event_name }}"
